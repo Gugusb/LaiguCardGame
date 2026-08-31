@@ -1,0 +1,14 @@
+{
+  "parent": "minecraft:item/generated",
+  "textures": {
+    "layer0": "laigu:item/bai_shi_san_le_common"
+  },
+  "overrides": [
+    {
+      "predicate": {
+        "laigu:inspecting": 1
+      },
+      "model": "laigu:item/bai_shi_san_le_common_3d"
+    }
+  ]
+}

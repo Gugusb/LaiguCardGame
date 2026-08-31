@@ -1,0 +1,6 @@
+{
+  "parent": "laigu:item/card_3d",
+  "textures": {
+    "layer0": "laigu:item/yun_lei_wen_da_nao_common"
+  }
+}

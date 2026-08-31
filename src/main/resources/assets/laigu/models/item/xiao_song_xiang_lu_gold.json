@@ -1,0 +1,14 @@
+{
+  "parent": "minecraft:item/generated",
+  "textures": {
+    "layer0": "laigu:item/xiao_song_xiang_lu_gold"
+  },
+  "overrides": [
+    {
+      "predicate": {
+        "laigu:inspecting": 1
+      },
+      "model": "laigu:item/xiao_song_xiang_lu_gold_3d"
+    }
+  ]
+}

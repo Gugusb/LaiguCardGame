@@ -1,0 +1,14 @@
+{
+  "parent": "minecraft:item/generated",
+  "textures": {
+    "layer0": "laigu:item/jiu_zhang_common"
+  },
+  "overrides": [
+    {
+      "predicate": {
+        "laigu:inspecting": 1
+      },
+      "model": "laigu:item/jiu_zhang_common_3d"
+    }
+  ]
+}

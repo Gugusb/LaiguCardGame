@@ -1,0 +1,6 @@
+{
+  "parent": "laigu:item/card_3d",
+  "textures": {
+    "layer0": "laigu:item/lu_wang_ben_sheng_tu_common"
+  }
+}

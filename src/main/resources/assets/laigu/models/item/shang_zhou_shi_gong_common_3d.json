@@ -1,0 +1,6 @@
+{
+  "parent": "laigu:item/card_3d",
+  "textures": {
+    "layer0": "laigu:item/shang_zhou_shi_gong_common"
+  }
+}

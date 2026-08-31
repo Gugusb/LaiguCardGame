@@ -1,0 +1,14 @@
+{
+  "parent": "minecraft:item/generated",
+  "textures": {
+    "layer0": "laigu:item/guang_cai_miao_jin_hu_gold"
+  },
+  "overrides": [
+    {
+      "predicate": {
+        "laigu:inspecting": 1
+      },
+      "model": "laigu:item/guang_cai_miao_jin_hu_gold_3d"
+    }
+  ]
+}

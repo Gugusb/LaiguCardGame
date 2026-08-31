@@ -1,0 +1,6 @@
+{
+  "parent": "laigu:item/card_3d_gold",
+  "textures": {
+    "layer0": "laigu:item/wang_shi_shu_han_juan_gold"
+  }
+}

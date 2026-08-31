@@ -1,0 +1,6 @@
+{
+  "parent": "laigu:item/card_3d",
+  "textures": {
+    "layer0": "laigu:item/jin_chan_yu_ye_common"
+  }
+}

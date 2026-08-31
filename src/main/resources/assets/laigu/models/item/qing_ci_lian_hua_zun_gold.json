@@ -1,0 +1,14 @@
+{
+  "parent": "minecraft:item/generated",
+  "textures": {
+    "layer0": "laigu:item/qing_ci_lian_hua_zun_gold"
+  },
+  "overrides": [
+    {
+      "predicate": {
+        "laigu:inspecting": 1
+      },
+      "model": "laigu:item/qing_ci_lian_hua_zun_gold_3d"
+    }
+  ]
+}

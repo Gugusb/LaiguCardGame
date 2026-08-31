@@ -1,0 +1,6 @@
+{
+  "parent": "laigu:item/card_3d",
+  "textures": {
+    "layer0": "laigu:item/song_jin_xiang_shi_common"
+  }
+}

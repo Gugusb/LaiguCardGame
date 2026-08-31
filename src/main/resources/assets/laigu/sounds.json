@@ -1,0 +1,10 @@
+{
+  "fusheng_touxian": {
+    "sounds": [
+      {
+        "name": "laigu:fusheng_touxian",
+        "stream": true
+      }
+    ]
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "variants": {
+    "": {
+      "model": "laigu:block/card_exchange_table"
+    }
+  }
+}
