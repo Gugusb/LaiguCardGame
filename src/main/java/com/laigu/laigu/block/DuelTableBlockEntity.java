@@ -5,10 +5,14 @@ import com.laigu.laigu.container.DuelTableMenu;
 import com.laigu.laigu.duel.DuelActions;
 import com.laigu.laigu.duel.DuelAi;
 import com.laigu.laigu.duel.DuelGame;
+import com.laigu.laigu.duel.newcard.DuelGameNewCardShadowAdapter;
 import com.laigu.laigu.item.CardItem;
 import com.laigu.laigu.item.DeckBoxItem;
 import com.laigu.laigu.network.DuelEmojiS2CPacket;
 import com.laigu.laigu.network.DuelStateS2CPacket;
+import com.laigu.laigu.network.NewAnimationEventS2CPacket;
+import com.laigu.laigu.duel.newcard.AnimationEvent;
+import com.laigu.laigu.duel.newcard.NewAnimationEventBridge;
 import com.laigu.laigu.network.ModPackets;
 import com.laigu.laigu.registry.ModBlockEntities;
 import com.laigu.laigu.util.CardNbt;
@@ -48,8 +52,11 @@ import java.util.UUID;
  */
 public class DuelTableBlockEntity extends BlockEntity
 {
+    private static final org.slf4j.Logger LOGGER = com.mojang.logging.LogUtils.getLogger();
     private final RandomSource rnd = RandomSource.create();
     private DuelGame game;
+    /** 新卡核心影子状态；旧 DuelGame 仍为唯一权威，不参与结算。 */
+    private final DuelGameNewCardShadowAdapter newCardShadow = new DuelGameNewCardShadowAdapter();
     private int aiCooldown = 0;
 
     private final UUID[] owner = new UUID[2];
@@ -60,6 +67,8 @@ public class DuelTableBlockEntity extends BlockEntity
     private boolean rewardDone = false;
     /** 本局是否已结算「参战胜利次数」（每局只结算一次）。 */
     private boolean winsCounted = false;
+    /** 新版动画增量仅在显式启用时广播，默认保持旧协议行为不变。 */
+    private static final boolean NEW_ANIMATION_BROADCAST = true;
 
     /** 观战者（对决开始后点击方块加入；只观战不操作，随房间解散一并退出）。 */
     private final List<UUID> spectators = new ArrayList<>();
@@ -342,7 +351,7 @@ public class DuelTableBlockEntity extends BlockEntity
             return;
         }
         if (game != null && game.isFinished()) game = null;
-        if (game == null) game = new DuelGame(rnd);
+        if (game == null) { game = new DuelGame(rnd); installNewCardSettlementHook(); }
 
         DeckBoxContainer container = pendingDecks.remove(player.getUUID());
         boolean creative = held.getItem() instanceof DeckBoxItem di2 && di2.creative;
@@ -403,6 +412,217 @@ public class DuelTableBlockEntity extends BlockEntity
         return deck;
     }
 
+    /** 影子层同步旧 DuelGame 的实际五个场位，不改变旧 DuelGame。 */
+    private void observeDecksInShadowState()
+    {
+        newCardShadow.synchronizeFrom(game);
+        // 骰子属于旧状态的运行时数据，影子层同步时一并更新，供新版动画/计分消费。
+        for (int side = 0; side < 2; side++)
+            for (int slot = 0; slot < 5; slot++)
+            {
+                com.laigu.laigu.duel.FieldCard card = game.field(side).get(slot);
+                if (card == null) newCardShadow.battle().state().cardStateAt(side, slot).clearDice();
+                else newCardShadow.battle().state().cardStateAt(side, slot).setDice(card.activeDice());
+            }
+    }
+
+    /**
+     * 阶段十二生产切换：回合结算时用新卡核心计算 (base, mult, extra)，旧引擎结果仅作并行对照。
+     * 开关关闭 / 场上有未迁移卡牌时返回 null → 该回合回退旧引擎。
+     */
+    private void installNewCardSettlementHook()
+    {
+        installNewCardDraftHook();
+        game.setRoundSettlementHook((side, legacy) ->
+        {
+            if (!com.laigu.laigu.duel.newcard.NewCardCoreSwitch.enabled()) return null;
+            observeDecksInShadowState();
+            com.laigu.laigu.duel.newcard.NewCardBattle battle = newCardShadow.battle();
+            if (!com.laigu.laigu.duel.newcard.NewCardCoreSwitch.canSettle(battle)) return null;
+            // 激活进度：清单口径「激活每轮清零」，且旧引擎对照结算会自行推进 FieldCard.activation，
+            // 不得回灌新核心——否则同一激活源（溪山/海错等）在本回合被新旧双算，编钟等阈值卡
+            // 会在开局即接近阈值，导致倍率虚高。这里统一清零，由新核心 OnSettlement 独立累计。
+            for (int s2 = 0; s2 < 2; s2++)
+                for (int slot = 0; slot < 5; slot++)
+                    battle.state().cardStateAt(s2, slot).setActivation(0);
+            // 阶段18：同步实态手牌数/行动力，保证手牌数类词条（如「每张手牌」）结算取值准确。
+            newCardShadow.syncEphemeralFrom(game);
+            com.laigu.laigu.duel.newcard.ScoreSnapshot fresh =
+                    com.laigu.laigu.duel.newcard.NewSettlementCalculator.calculate(battle);
+            // 对齐清单：结算期间卡类可能标记破坏（鸟尊金焕章）/封锁（牛尊金焕章）→ 回写实态。
+            bridgeShadowRuntimeToReal(battle, false);
+            var newSide = fresh.sides().get(side);
+            // 新旧并行对照：差异写入战斗日志，禁止静默忽略。
+            if (newSide.base() != legacy.base() || newSide.multiplier() != legacy.mult()
+                    || newSide.extra() != legacy.extra())
+            {
+                String diff = String.format("[新核心对照] side%d 旧(%d/%d/%d) 新(%d/%d/%d)",
+                        side, legacy.base(), legacy.mult(), legacy.extra(),
+                        newSide.base(), newSide.multiplier(), newSide.extra());
+                game.addLog(-1, diff);
+                // 阶段18：差异同步到服务端日志，供实机对照自动核对（零差异时不输出）。
+                LOGGER.info(diff);
+            }
+            // 阶段17：结算动画广播（每轮一次；结算后清空 BattleState.animations 防跨轮累积）。
+            drainNewCardAnimations(true);
+            return new com.laigu.laigu.duel.ScoreEngine.ScoreResult(
+                    newSide.base(), newSide.multiplier(), newSide.extra(), newSide.total());
+        });
+    }
+    /** 阶段16：抢骰钩子——抓取计划与抓骰副作用由新核心承担（旧流程仅保留状态存储）。 */
+    private void installNewCardDraftHook()
+    {
+        game.setDraftHook(new com.laigu.laigu.duel.DuelGame.DraftHook()
+        {
+            /** 上次构建计划的轮次（跨轮清一次性入场加成用）。 */
+            private int lastDraftPlanRound = -1;
+
+            @Override public int[][] buildPlan(int firstPicker)
+            {
+                if (!com.laigu.laigu.duel.newcard.NewCardCoreSwitch.enabled()) return null;
+                com.laigu.laigu.duel.newcard.NewCardBattle battle = newCardShadow.battle();
+                if (!com.laigu.laigu.duel.newcard.NewCardCoreSwitch.canSettle(battle)) return null;
+                newCardShadow.synchronizeFrom(game);
+                battle.state().setFirstPicker(firstPicker);
+                // Q7：新回合首次构建计划前，清掉上轮遗留的一次性入场加成（本回合入场加成在部署时已写入）。
+                if (game.round() != lastDraftPlanRound)
+                {
+                    lastDraftPlanRound = game.round();
+                    battle.state().clearDraftTurnBonuses();
+                }
+                com.laigu.laigu.duel.newcard.DraftPlanBuilder.build(battle);
+                return new int[][] {
+                        battle.state().draftFirstSizes().stream().mapToInt(Integer::intValue).toArray(),
+                        battle.state().draftSecondSizes().stream().mapToInt(Integer::intValue).toArray()
+                };
+            }
+
+            @Override public int[] onGrabbed(int side, int face)
+            {
+                if (!com.laigu.laigu.duel.newcard.NewCardCoreSwitch.enabled()) return new int[] {0, 0};
+                int[] fx = newCardShadow.battle().onGrabEffects(side, face);
+                drainNewCardAnimations(false);
+                return fx;
+            }
+        });
+
+        // 阶段18：时机事件生命周期接管——SUMMON/LEAVE/ROUND_START 由新核心派发并桥接实态，
+        // 旧触发系（triggerSummon/triggerLeave/triggerOtherUse/triggerRoundStart）仅回滚模式保留。
+        game.setLifecycleHook(new com.laigu.laigu.duel.DuelGame.LifecycleHook()
+        {
+            @Override public void onSummoned(int side, int slot)
+            {
+                dispatchLifecycleEvent(com.laigu.laigu.duel.newcard.BattleEvent.Type.SUMMON, side, slot);
+            }
+
+            @Override public void onLeave(int side, int slot)
+            {
+                dispatchLifecycleEvent(com.laigu.laigu.duel.newcard.BattleEvent.Type.LEAVE, side, slot);
+            }
+
+            @Override public void onRoundStart()
+            {
+                dispatchLifecycleEvent(com.laigu.laigu.duel.newcard.BattleEvent.Type.ROUND_START, -1, -1);
+            }
+        });
+
+        // 对齐清单（2026-09-03）：伏击语义接管——影子派发 AMBUSH 事件（卡类承担奖励/复制骰/无效化/破坏），
+        // 再把影子运行时改动回写实态 FieldCard。
+        game.setAmbushHook((side, slot, success) ->
+        {
+            if (!com.laigu.laigu.duel.newcard.NewCardCoreSwitch.enabled()) return;
+            com.laigu.laigu.duel.newcard.NewCardBattle battle = newCardShadow.battle();
+            newCardShadow.synchronizeFrom(game);
+            // 伏击前实态：原始骰（未无效化，供睡莲/百花操作）+ 激活进度。
+            for (int s2 = 0; s2 < 2; s2++)
+                for (int i = 0; i < 5; i++)
+                {
+                    com.laigu.laigu.duel.FieldCard card = game.field(s2).get(i);
+                    if (card == null)
+                    {
+                        battle.state().cardStateAt(s2, i).clearDice();
+                        continue;
+                    }
+                    battle.state().cardStateAt(s2, i).setDice(card.dice);
+                    battle.state().cardStateAt(s2, i).setActivation(card.activation);
+                }
+            newCardShadow.syncEphemeralFrom(game);
+            battle.dispatchToCard(side, slot, new com.laigu.laigu.duel.newcard.BattleEvent(
+                    success ? com.laigu.laigu.duel.newcard.BattleEvent.Type.AMBUSH_SUCCESS
+                            : com.laigu.laigu.duel.newcard.BattleEvent.Type.AMBUSH_FAIL, side, slot));
+            bridgeShadowRuntimeToReal(battle, true);
+            drainNewCardAnimations(false);
+        });
+    }
+
+    /**
+     * 影子运行时 → 实态 FieldCard 回写：破坏标记/封锁/无效化骰数/激活进度（+新增骰子）。
+     * 新核心为这些运行时语义的唯一权威；旧引擎硬编码仅回滚模式。
+     */
+    private void bridgeShadowRuntimeToReal(com.laigu.laigu.duel.newcard.NewCardBattle battle, boolean includeDice)
+    {
+        for (com.laigu.laigu.duel.newcard.CardPlacement p : battle.placements())
+        {
+            com.laigu.laigu.duel.FieldCard fc = game.field(p.side()).get(p.slot());
+            if (fc == null) continue;
+            com.laigu.laigu.duel.newcard.CardRuntimeState rt = battle.state().cardStateAt(p.side(), p.slot());
+            if (rt.destroyAtRoundEnd()) fc.destroyAtRoundEnd = true;
+            if (rt.locked()) fc.locked = true;
+            if (rt.invalidatedDice() > 0) fc.invalidatedCount = rt.invalidatedDice();
+            fc.activation = rt.activation();
+            if (includeDice && rt.dice().size() > fc.dice.size())
+                for (int k = fc.dice.size(); k < rt.dice().size() && fc.canAddDie(); k++)
+                    fc.dice.add(rt.dice().get(k));
+        }
+    }
+
+    /** 阶段18：同步影子（场位/骰子/激活进度/手牌数/行动力）→ 派发生命周期事件 → 实态增量回写。 */
+    private void dispatchLifecycleEvent(com.laigu.laigu.duel.newcard.BattleEvent.Type type, int side, int slot)
+    {
+        if (!com.laigu.laigu.duel.newcard.NewCardCoreSwitch.enabled()) return;
+        com.laigu.laigu.duel.newcard.NewCardBattle battle = newCardShadow.battle();
+        newCardShadow.synchronizeFrom(game);
+        // 激活进度等旧状态运行时数据一并同步（与结算钩子同步口径一致）。
+        for (int s2 = 0; s2 < 2; s2++)
+            for (int i = 0; i < 5; i++)
+            {
+                com.laigu.laigu.duel.FieldCard card = game.field(s2).get(i);
+                if (card != null)
+                    battle.state().cardStateAt(s2, i).setActivation(card.activation);
+            }
+        newCardShadow.syncEphemeralFrom(game);
+        if (type == com.laigu.laigu.duel.newcard.BattleEvent.Type.ROUND_START)
+        {
+            battle.startRound();   // 含场上卡轮次推进与 ROUND_START 广播
+        }
+        else if (type == com.laigu.laigu.duel.newcard.BattleEvent.Type.LEAVE)
+        {
+            // 离场事件只派发给离场卡（旧引擎 triggerLeave 单卡语义；避免其他离场监听卡误触发）。
+            battle.dispatchToCard(side, slot,
+                    new com.laigu.laigu.duel.newcard.BattleEvent(type, side, slot));
+        }
+        else
+        {
+            battle.dispatch(new com.laigu.laigu.duel.newcard.BattleEvent(type, side, slot));
+        }
+        // 激活进度回写实态：新触发系已接管激活推进/重置（旧 activateCardDirect 仅回滚模式）。
+        for (com.laigu.laigu.duel.newcard.CardPlacement p : battle.placements())
+        {
+            com.laigu.laigu.duel.FieldCard fc = game.field(p.side()).get(p.slot());
+            if (fc != null)
+                fc.activation = battle.state().cardStateAt(p.side(), p.slot()).activation();
+        }
+        // 抽牌/回复行动力差值回写实态。
+        for (int s = 0; s < 2; s++)
+        {
+            int drawn = battle.state().handSize(s) - game.hand(s).size();
+            if (drawn > 0) game.applyNewCoreDraw(s, drawn);
+            int apGain = battle.state().actionPoints(s) - game.actionPoints(s);
+            if (apGain > 0) game.applyNewCoreActionPoints(s, apGain);
+        }
+        drainNewCardAnimations(false);
+    }
+
     // ---- 主机设置 / AI ----
 
     private void doHostSettings(Player player, boolean dark)
@@ -420,6 +640,7 @@ public class DuelTableBlockEntity extends BlockEntity
         }
         game.darkMode = dark;
         game.start();
+        observeDecksInShadowState();
         broadcastAll();
         checkReward();
         countWins();
@@ -432,7 +653,7 @@ public class DuelTableBlockEntity extends BlockEntity
             sendMsg(player, "message.laigu.duel_host_only");
             return;
         }
-        if (game == null) game = new DuelGame(rnd);
+        if (game == null) { game = new DuelGame(rnd); installNewCardSettlementHook(); }
         if (game.isStarted()) return;
         int aiSide = -1;
         for (int s = 0; s < 2; s++)
@@ -630,6 +851,31 @@ public class DuelTableBlockEntity extends BlockEntity
 
     // ================= 状态广播 =================
 
+    /** 阶段17：取出新核心动画事件并广播；oncePerRound=true 时每轮只广播首批（结算钩子每侧各触发一次 calculate，第二批为重复事件）。 */
+    private void drainNewCardAnimations(boolean oncePerRound)
+    {
+        if (!com.laigu.laigu.duel.newcard.NewCardCoreSwitch.enabled()) return;
+        java.util.List<AnimationEvent> events = newCardShadow.battle().state().drainAnimations();
+        if (events.isEmpty()) return;
+        if (oncePerRound && game.round() == lastAnimBroadcastRound) return;
+        lastAnimBroadcastRound = game.round();
+        broadcastNewAnimationEvents(events);
+    }
+
+    private int lastAnimBroadcastRound = -1;
+
+    public void broadcastNewAnimationEvents(java.util.List<AnimationEvent> events)
+    {
+        if (!NEW_ANIMATION_BROADCAST || level == null || level.isClientSide || events == null || events.isEmpty()) return;
+        for (int s = 0; s < 2; s++)
+        {
+            if (isAi[s] || owner[s] == null) continue;
+            ServerPlayer p = ((ServerLevel) level).getServer().getPlayerList().getPlayer(owner[s]);
+            if (p != null) ModPackets.CHANNEL.send(PacketDistributor.PLAYER.with(() -> p),
+                    new NewAnimationEventS2CPacket(worldPosition, NewAnimationEventBridge.toPacket(events)));
+        }
+    }
+
     public void broadcastAll()
     {
         if (level == null || level.isClientSide) return;
@@ -797,6 +1043,7 @@ public class DuelTableBlockEntity extends BlockEntity
     protected void saveAdditional(CompoundTag tag)
     {
         super.saveAdditional(tag);
+        com.laigu.laigu.duel.newcard.BattleStatePersistence.save(newCardShadow.battle().state(), tag);
         if (game != null)
         {
             tag.put("game", game.toNbt());
@@ -818,6 +1065,8 @@ public class DuelTableBlockEntity extends BlockEntity
     public void load(CompoundTag tag)
     {
         super.load(tag);
+        com.laigu.laigu.duel.newcard.BattleStatePersistence.loadInto(newCardShadow.battle().state(), tag);
+        // 旧存档缺少新版字段时保留影子状态默认值。
         for (int s = 0; s < 2; s++)
         {
             owner[s] = tag.contains("owner" + s) ? tag.getUUID("owner" + s) : null;
@@ -829,6 +1078,7 @@ public class DuelTableBlockEntity extends BlockEntity
         if (tag.contains("game"))
         {
             game = DuelGame.fromNbt(tag.getCompound("game"), rnd);
+            installNewCardSettlementHook();
         }
     }
 }

@@ -249,7 +249,8 @@ public class DuelGame
                 }
             }
             drawCards(s, round == 1 ? 5 : 1);
-            triggerRoundStart(s);   // 每轮开始触发系（场上卡抽卡）
+            if (!com.laigu.laigu.duel.newcard.NewCardCoreSwitch.enabled())
+                triggerRoundStart(s);   // 每轮开始触发系（场上卡抽卡）——仅回滚模式
             collectTiming(s, EffectType.ROUND_START_SCORE_EXTRA, 0);   // 得分时机：回合开始时
             // 【激活x】每轮开始：清空上轮激活进度（激活在本轮结算时按充能x触发）
             for (int i = 0; i < FIELD_SLOTS; i++)
@@ -258,6 +259,9 @@ public class DuelGame
                 if (fc != null) fc.activation = 0;
             }
         }
+        // 阶段18：每轮开始的场上卡触发（抽卡类）由新核心派发（含场上卡轮次推进），旧触发系仅回滚模式保留。
+        if (lifecycleHook != null && com.laigu.laigu.duel.newcard.NewCardCoreSwitch.enabled())
+            lifecycleHook.onRoundStart();
         sharedPool.clear();
         for (int i = 0; i < SHARED_POOL_SIZE; i++) sharedPool.add(rnd.nextInt(6) + 1);
         firstPicker = round == 1 ? rnd.nextInt(2) : (winnerLast == -1 ? rnd.nextInt(2) : 1 - winnerLast);
@@ -376,6 +380,9 @@ public class DuelGame
         DuelCardData nd = DuelCardCatalog.of(c);
         if (nd != null && nd.effectFor(c).isConsume()) nf.intrinsicConsume = true;
         if (old != null && DuelCardData.isGold(c)) nf.dice.addAll(old.dice);   // 金卡替换继承槽位骰子
+        // 阶段18：被替换旧卡的离场事件由新核心派发（旧卡仍在场位上，影子可定位）。
+        if (old != null && lifecycleHook != null && com.laigu.laigu.duel.newcard.NewCardCoreSwitch.enabled())
+            lifecycleHook.onLeave(side, slot);
         field[side].set(slot, nf);
         actionPoints[side]--;
         actionPointsSpentThisRound[side]++;
@@ -391,9 +398,18 @@ public class DuelGame
         String uid = CardNbt.uidOf(c);
         if (uid != null) deployedUids[side].add(uid);
         // ---- 触发系：被替换的旧卡离场 → 新卡入场 → 场上「使用其他手牌」类卡触发 ----
-        if (old != null) triggerLeave(side, old);
-        triggerSummon(side, slot);
-        triggerOtherUse(side, slot);
+        // 阶段18：开关开启时 SUMMON/LEAVE 由 LifecycleHook 派发（LEAVE 已在场位覆盖前派发）；
+        // 旧触发系仅回滚模式（开关关闭）保留。
+        if (com.laigu.laigu.duel.newcard.NewCardCoreSwitch.enabled())
+        {
+            if (lifecycleHook != null) lifecycleHook.onSummoned(side, slot);
+        }
+        else
+        {
+            if (old != null) triggerLeave(side, old);
+            triggerSummon(side, slot);
+            triggerOtherUse(side, slot);
+        }
         // 得分时机：使用手牌（部署）时
         collectTiming(side, EffectType.USE_HAND_SCORE_EXTRA, 0);
     }
@@ -524,34 +540,44 @@ public class DuelGame
         draftTarget[side]--;
         draftTurnRemaining--;
         draftPickSerial[side]++;
-        // 星月夜金卡：任一方每次抓骰后向公共池加入一个随机骰。
-        for (int owner = 0; owner < 2; owner++)
-            for (ItemStack st : fieldCards(owner))
+        // 阶段16：开关开时抓骰副作用由新核心承担（星月夜补池/重骰/抓取得分）。
+        if (draftHook != null && com.laigu.laigu.duel.newcard.NewCardCoreSwitch.enabled())
+        {
+            int[] fx = draftHook.onGrabbed(side, grabbedFace);
+            for (int i = 0; i < fx[0]; i++) sharedPool.add(rnd.nextInt(6) + 1);
+            if (fx[1] != 0) timingExtra[side] += fx[1];
+        }
+        else
+        {
+            // 星月夜金卡：任一方每次抓骰后向公共池加入一个随机骰。
+            for (int owner = 0; owner < 2; owner++)
+                for (ItemStack st : fieldCards(owner))
+                {
+                    DuelCardData dd = DuelCardCatalog.of(st);
+                    if (dd != null && "xing_yue_ye".equals(dd.cardId) && DuelCardData.isGold(st))
+                    {
+                        sharedPool.add(rnd.nextInt(6) + 1);
+                        break;
+                    }
+                }
+            // 【重骰】本轮限一次：抓取到点数 x 的骰时，重骰共享池中所有 > x 的骰（由本方场上的「重骰」卡触发）
+            int rerollLimit = 0;
+            for (ItemStack st : fieldCards(side))
             {
                 DuelCardData dd = DuelCardCatalog.of(st);
-                if (dd != null && "xing_yue_ye".equals(dd.cardId) && DuelCardData.isGold(st))
-                {
-                    sharedPool.add(rnd.nextInt(6) + 1);
-                    break;
-                }
+                if (dd != null && dd.effectFor(st) == EffectType.REROLL_ON_DRAFT)
+                    rerollLimit += DuelCardData.isGold(st) ? 2 : 1;
             }
-        // 【重骰】本轮限一次：抓取到点数 x 的骰时，重骰共享池中所有 > x 的骰（由本方场上的「重骰」卡触发）
-        int rerollLimit = 0;
-        for (ItemStack st : fieldCards(side))
-        {
-            DuelCardData dd = DuelCardCatalog.of(st);
-            if (dd != null && dd.effectFor(st) == EffectType.REROLL_ON_DRAFT)
-                rerollLimit += DuelCardData.isGold(st) ? 2 : 1;
+            if (rerollUses < rerollLimit)
+            {
+                for (int k = 0; k < sharedPool.size(); k++)
+                    if (sharedPool.get(k) > grabbedFace) sharedPool.set(k, rnd.nextInt(6) + 1);
+                rerollUses++;
+                lastMsg = "重骰生效：共享池中大于 " + grabbedFace + " 的骰已重掷";
+            }
+            // 得分时机：抓取骰子时（场上「抓取」效果 → (6-抓取点数)*p1 额外分）
+            collectTiming(side, EffectType.DRAFT_SCORE_EXTRA, grabbedFace);
         }
-        if (rerollUses < rerollLimit)
-        {
-            for (int k = 0; k < sharedPool.size(); k++)
-                if (sharedPool.get(k) > grabbedFace) sharedPool.set(k, rnd.nextInt(6) + 1);
-            rerollUses++;
-            lastMsg = "重骰生效：共享池中大于 " + grabbedFace + " 的骰已重掷";
-        }
-        // 得分时机：抓取骰子时（场上「抓取」效果 → (6-抓取点数)*p1 额外分）
-        collectTiming(side, EffectType.DRAFT_SCORE_EXTRA, grabbedFace);
         // 本次抓取取完 / 共享池取空 / 已持满上限 → 前进/自动结束（满8不再卡住，跳过余下次数）
         if (draftTurnRemaining <= 0 || sharedPool.isEmpty() || pool[side].size() >= MAX_DICE_HELD)
         {
@@ -597,6 +623,18 @@ public class DuelGame
     /** 读取双方场上卡的抓取效果（各少/多抓、单方扰动、共享池 +N），生成抓取计划。 */
     private void buildDraftPlan()
     {
+        // 阶段16：新核心抢骰钩子优先（开关开 + 钩子返回非 null）。
+        if (draftHook != null && com.laigu.laigu.duel.newcard.NewCardCoreSwitch.enabled())
+        {
+            int[][] plan = draftHook.buildPlan(firstPicker);
+            if (plan != null)
+            {
+                draftFirstSizes = plan[0];
+                draftSecondSizes = plan[1];
+                rebuildPlan();
+                return;
+            }
+        }
         int fMod = 0, sMod = 0, poolExtra = 0; // 双方同效（抓取次数）
         int[] selfMod = new int[2];             // 单方多抓（DRAFT_SELF_TURNS_UP）
         int[] oppMod = new int[2];              // 单方压制对方（DRAFT_OPP_TURNS_DOWN）
@@ -747,6 +785,66 @@ public class DuelGame
 
     // ================= 结算 =================
 
+    /**
+     * 阶段十二生产切换钩子：旧引擎照常计算并保留其副作用（消耗标记/动画步骤/激活链），
+     * 钩子可用新核心结果替换本侧的 (base, mult, extra)；返回 null 表示本回合回退旧引擎。
+     * lastTotal 由调用方合并时机加成后重算，钩子的 total() 不参与。
+     */
+    public interface RoundSettlementHook
+    {
+        ScoreEngine.ScoreResult settleSide(int side, ScoreEngine.ScoreResult legacyResult);
+    }
+
+    private RoundSettlementHook roundSettlementHook;
+
+    /** 安装新卡核心结算钩子（传 null 卸载）。由 DuelTableBlockEntity 在开局/读档时安装。 */
+    public void setRoundSettlementHook(RoundSettlementHook hook) { this.roundSettlementHook = hook; }
+
+    /**
+     * 阶段16抢骰钩子：开关开时抓取计划与抓骰副作用由新核心承担，
+     * 旧 DuelGame 只保留状态存储与回合时序。由 DuelTableBlockEntity 安装。
+     */
+    public interface DraftHook
+    {
+        /** 构建抓取计划；返回 {先手每次颗数[], 后手每次颗数[]}，null = 交回旧路径。 */
+        int[][] buildPlan(int firstPicker);
+
+        /** 抓骰副作用；返回 {向共享池补入的随机骰颗数, 抓取得分额外分}。 */
+        int[] onGrabbed(int side, int face);
+    }
+
+    private DraftHook draftHook;
+
+    /** 安装新卡核心抢骰钩子（传 null 卸载）。 */
+    public void setDraftHook(DraftHook hook) { this.draftHook = hook; }
+
+    /**
+     * 阶段18：时机事件生命周期钩子——开关开启时 SUMMON/LEAVE/ROUND_START 由新核心派发，
+     * 旧触发系（triggerSummon/triggerLeave/triggerOtherUse/triggerRoundStart）仅回滚模式保留。
+     * 实现方负责影子同步、事件派发与实态增量回写（抽牌/回复行动力/激活进度）。
+     */
+    public interface LifecycleHook
+    {
+        void onSummoned(int side, int slot);
+        void onLeave(int side, int slot);
+        void onRoundStart();
+    }
+
+    private LifecycleHook lifecycleHook;
+
+    /** 安装新卡核心生命周期钩子（传 null 卸载）。 */
+    public void setLifecycleHook(LifecycleHook hook) { this.lifecycleHook = hook; }
+
+    /** 对齐清单（2026-09-03）：伏击结算由新核心卡类承担（奖励/骰子复制/无效化/破坏），实态桥由实现方回写。 */
+    public interface AmbushHook
+    {
+        void onAmbushResolved(int side, int slot, boolean success);
+    }
+
+    private AmbushHook ambushHook;
+
+    public void setAmbushHook(AmbushHook hook) { this.ambushHook = hook; }
+
     private void settleRound()
     {
         // 计分动画：先结算本轮先手，再结算后手；每侧卡牌自左向右依次结算
@@ -813,12 +911,20 @@ public class DuelGame
         {
             // 回合结束得分时机（场上「回合结束」效果的额外分）
             collectTiming(s, EffectType.ROUND_END_SCORE_EXTRA, 0);
-            ScoreEngine.ScoreResult r = ScoreEngine.computeWithSteps(this, s, lastSteps);
+            ScoreEngine.ScoreResult engineResult = ScoreEngine.computeWithSteps(this, s, lastSteps);
+            ScoreEngine.ScoreResult hookResult = roundSettlementHook == null ? null
+                    : roundSettlementHook.settleSide(s, engineResult);
+            ScoreEngine.ScoreResult r = hookResult != null ? hookResult : engineResult;
             lastBase[s] = r.base() + timingBase[s];
             lastMult[s] = r.mult() + timingMult[s];
             // 非结算得分时机（抓取/布置/回合开始/使用手牌/回合结束）+ 激活奖励 贡献并入本轮总分
             lastExtra[s] = r.extra() + timingExtra[s];
-            lastTotal[s] = lastBase[s] * lastMult[s] + lastExtra[s];
+            // 胜负判定/局内累计总分必须用真实值：钩子命中（新核心接管）时其结果已含全部时机贡献，
+            // 上式的旧 timing 叠加仅服务于展示链路（用户拍板接受其偏高），不得进入胜负口径，
+            // 否则激活奖励双算会直接改判输赢。钩子未命中（回退旧引擎）时维持原公式。
+            lastTotal[s] = hookResult != null
+                    ? r.base() * r.mult() + r.extra()
+                    : lastBase[s] * lastMult[s] + lastExtra[s];
             // 把时机/词条贡献并入计分步骤末尾（供右侧积分栏/动画展示；slot=-1 表示非卡牌步骤）
             if (timingBase[s] != 0 || timingMult[s] != 0 || timingExtra[s] != 0)
             {
@@ -882,6 +988,13 @@ public class DuelGame
     private void resolveActivationTarget(int side, FieldCard target, DuelCardData d)
     {
         if (target.activation < d.activateCap) return;
+        // 阶段18：开关开启且新核心结算钩子在位时，激活奖励由新核心结算承担（carry 通道并入新结果），
+        // 旧 applyReward 不再写入 timing 计数器，防止最终展示分双算；进度重置保留。
+        if (com.laigu.laigu.duel.newcard.NewCardCoreSwitch.enabled() && roundSettlementHook != null)
+        {
+            target.activation = 0;
+            return;
+        }
         EffectType reward = DuelCardData.isGold(target.card) ? d.goldActivateReward : d.activateReward;
         int value = DuelCardData.isGold(target.card) ? d.goldActivateP1 : d.activateP1;
         if (reward != null) applyReward(reward, value, target, side);
@@ -895,7 +1008,11 @@ public class DuelGame
     private void removeFieldCard(int side, int slot, FieldCard fc, boolean toHand)
     {
         // 先按离场卡自身的最终变体执行离场效果，再清除场上骰子和槽位状态。
-        triggerLeave(side, fc);
+        // 阶段18：开关开启时 LEAVE 由 LifecycleHook 派发（离场卡仍在场位上，影子可定位）。
+        if (lifecycleHook != null && com.laigu.laigu.duel.newcard.NewCardCoreSwitch.enabled())
+            lifecycleHook.onLeave(side, slot);
+        else
+            triggerLeave(side, fc);
         fc.dice.clear();
         if (toHand) hand[side].add(fc.card);
         field[side].set(slot, null);
@@ -916,6 +1033,14 @@ public class DuelGame
                 fc.faceDown = false;   // 计分时揭晓
                 FieldCard oppFc = i < opp.size() ? opp.get(i) : null;
                 boolean gold = DuelCardData.isGold(fc.card);
+                if (ambushHook != null && com.laigu.laigu.duel.newcard.NewCardCoreSwitch.enabled())
+                {
+                    // 对齐清单：伏击语义（含金卡焕章）由新核心卡类实现，旧硬编码仅回滚模式保留。
+                    ambushHook.onAmbushResolved(s, i, oppFc != null);
+                    lastSteps.add(new ScoreEngine.ScoreStep(s, i, 1, timingBase[s], timingMult[s], timingExtra[s], 2));
+                    addLog(s, "伏击·" + fc.card.getHoverName().getString() + "：" + (oppFc != null ? "成功" : "失败"));
+                    continue;
+                }
                 if (oppFc != null)
                 {
                     if (gold && "dun_huang_fei_tian".equals(d.cardId))
@@ -1186,6 +1311,21 @@ public class DuelGame
     }
 
     // ================= 访问器 =================
+
+    /** 阶段18：新核心生命周期桥接——把新核心事件产生的抽牌写入实态（仅供 LifecycleHook 实现调用）。 */
+    public void applyNewCoreDraw(int side, int amount)
+    {
+        drawCards(side, amount);
+    }
+
+    /** 阶段18：新核心生命周期桥接——回复行动力（不超本轮上限；对齐旧 SUMMON_RESTORE_AP 语义）。 */
+    /** 本轮已消耗行动力（观星金焕章「消耗行动力时+15」取值）。 */
+    public int actionPointsSpentThisRound(int side) { return actionPointsSpentThisRound[side]; }
+
+    public void applyNewCoreActionPoints(int side, int amount)
+    {
+        actionPoints[side] = Math.min(maxAp(round), actionPoints[side] + amount);
+    }
 
     public List<FieldCard> field(int side) { return field[side]; }
     public List<ItemStack> hand(int side) { return hand[side]; }

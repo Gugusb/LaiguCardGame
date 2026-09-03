@@ -4,6 +4,8 @@ import com.laigu.laigu.album.AlbumPages;
 import com.laigu.laigu.album.CollectionAlbumData;
 import com.laigu.laigu.card.CardInfo;
 import com.laigu.laigu.duel.DuelCardCatalog;
+import com.laigu.laigu.duel.newcard.CardItemAdapter;
+import com.laigu.laigu.duel.newcard.DuelCard;
 import com.laigu.laigu.duel.DuelCardData;
 import com.laigu.laigu.item.CardItem;
 import com.laigu.laigu.network.CollectionAlbumActionC2SPacket;
@@ -314,12 +316,26 @@ public class CollectionAlbumScreen extends Screen
             lines.addAll(this.font.split(
                     Component.literal(duel.cls.displayName + (gold ? " · 金质" : " · 普通"))
                             .withStyle(duel.cls.color), TEXT_W));
-            lines.addAll(this.font.split(Component.literal(duel.descFor(hoverCard))
+            // 阶段13：卡面描述优先读新系统（DuelCard.description/goldDescription），未映射时回退旧目录
+            String mainLine = "";
+            String goldLine = null;
+            java.util.Optional<DuelCard> nc = CardItemAdapter.create(hoverCard);
+            if (nc.isPresent())
+            {
+                mainLine = nc.get().description();
+                if (gold) goldLine = nc.get().goldDescription();
+            }
+            if (mainLine.isEmpty())
+            {
+                mainLine = duel.descFor(hoverCard);
+                if (gold) goldLine = duel.goldDesc;
+            }
+            lines.addAll(this.font.split(Component.literal(mainLine)
                             .withStyle(gold ? ChatFormatting.GOLD : ChatFormatting.WHITE),
                     TEXT_W));
-            if (gold && duel.goldDesc != null)
+            if (gold && goldLine != null && !goldLine.isEmpty() && !"焕章：无".equals(goldLine))
             {
-                lines.addAll(this.font.split(Component.literal(duel.goldDesc)
+                lines.addAll(this.font.split(Component.literal(goldLine)
                         .withStyle(ChatFormatting.GOLD), TEXT_W));
             }
         }

@@ -10,14 +10,15 @@ import com.laigu.laigu.duel.newcard.DuelCard;
 public final class DunHuangFeiTianCommonCard implements DuelCard
 {
     @Override public String id() { return "dun_huang_fei_tian_common"; }
-    @Override public String displayName() { return "伏击·飞天"; }
+    @Override public String displayName() { return "敦煌飞天"; }
     @Override public CardClass cardClass() { return CardClass.MOU; }
 
     @Override
     public void onEvent(BattleEvent event, CardContext context)
     {
         if (event.type() != BattleEvent.Type.AMBUSH_FAIL) return;
-        context.addExtraScore(30);
+        context.addTimingExtra(30);
         context.emit(new AnimationEvent(AnimationEvent.Type.SCORE_POPUP, event.side(), event.slot(), id()));
     }
 }
+

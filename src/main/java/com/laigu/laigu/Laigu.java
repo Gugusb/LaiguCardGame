@@ -3,6 +3,7 @@ package com.laigu.laigu;
 import com.laigu.laigu.capability.ModCapabilities;
 import com.laigu.laigu.client.LaiguConfigScreen;
 import com.laigu.laigu.config.LaiguConfig;
+import com.laigu.laigu.duel.newcard.CardRegistry;
 import com.laigu.laigu.network.ModPackets;
 import com.laigu.laigu.registry.ModBlockEntities;
 import com.laigu.laigu.registry.ModBlocks;
@@ -47,6 +48,9 @@ public class Laigu
                 net.minecraftforge.client.ConfigScreenHandler.ConfigScreenFactory.class,
                 () -> new net.minecraftforge.client.ConfigScreenHandler.ConfigScreenFactory(
                         (mc, parent) -> new LaiguConfigScreen(parent)));
+
+        // 初始化新卡牌规则注册表；当前仅作为安全影子层，不替换旧 DuelGame。
+        CardRegistry.initialize();
 
         // 注册网络通道（客户端包面动画等数据包）
         ModPackets.register();

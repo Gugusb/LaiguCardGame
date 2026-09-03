@@ -10,7 +10,7 @@ import com.laigu.laigu.duel.newcard.DuelCard;
 public final class QingTongXianHeGoldCard implements DuelCard
 {
     @Override public String id() { return "qing_tong_xian_he_gold"; }
-    @Override public String displayName() { return "磐石·金"; }
+    @Override public String displayName() { return "青铜仙鹤·金质"; }
     @Override public CardClass cardClass() { return CardClass.SHOU; }
 
     @Override
@@ -18,8 +18,9 @@ public final class QingTongXianHeGoldCard implements DuelCard
     {
         if (event.type() != BattleEvent.Type.LEAVE) return;
         context.drawCards(2);
-        context.addMultiplier(4);
+        context.addTimingMult(4);
         context.emit(new AnimationEvent(AnimationEvent.Type.CARD_TRIGGER, event.side(), event.slot(), id()));
         context.emit(new AnimationEvent(AnimationEvent.Type.MULTIPLIER_POPUP, event.side(), event.slot(), id()));
     }
 }
+

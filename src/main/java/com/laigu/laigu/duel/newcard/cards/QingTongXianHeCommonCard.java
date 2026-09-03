@@ -10,7 +10,7 @@ import com.laigu.laigu.duel.newcard.DuelCard;
 public final class QingTongXianHeCommonCard implements DuelCard
 {
     @Override public String id() { return "qing_tong_xian_he_common"; }
-    @Override public String displayName() { return "磐石"; }
+    @Override public String displayName() { return "青铜仙鹤"; }
     @Override public CardClass cardClass() { return CardClass.SHOU; }
 
     @Override
@@ -21,3 +21,4 @@ public final class QingTongXianHeCommonCard implements DuelCard
         context.emit(new AnimationEvent(AnimationEvent.Type.CARD_TRIGGER, event.side(), event.slot(), id()));
     }
 }
+

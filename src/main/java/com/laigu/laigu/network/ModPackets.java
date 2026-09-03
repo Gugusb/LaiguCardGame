@@ -41,6 +41,10 @@ public final class ModPackets
                 DuelStateS2CPacket::encode,
                 DuelStateS2CPacket::decode,
                 DuelStateS2CPacket::handle);
+        CHANNEL.registerMessage(nextId++, NewAnimationEventS2CPacket.class,
+                NewAnimationEventS2CPacket::encode,
+                NewAnimationEventS2CPacket::decode,
+                NewAnimationEventS2CPacket::handle);
         CHANNEL.registerMessage(nextId++,
                 DuelEmojiS2CPacket.class,
                 DuelEmojiS2CPacket::encode,

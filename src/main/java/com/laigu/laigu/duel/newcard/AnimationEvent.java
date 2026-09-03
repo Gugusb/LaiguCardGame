@@ -1,7 +1,7 @@
 package com.laigu.laigu.duel.newcard;
 
 /** 规则层产生的动画事件；客户端只消费事件，不参与规则判定。 */
-public record AnimationEvent(Type type, int side, int slot, String cardId)
+public record AnimationEvent(Type type, int side, int slot, String cardId, int value)
 {
     public enum Type
     {
@@ -16,4 +16,7 @@ public record AnimationEvent(Type type, int side, int slot, String cardId)
         SCORE_POPUP,
         MULTIPLIER_POPUP
     }
+
+    /** 兼容构造：无数值事件（value=0）。 */
+    public AnimationEvent(Type type, int side, int slot, String cardId) { this(type, side, slot, cardId, 0); }
 }

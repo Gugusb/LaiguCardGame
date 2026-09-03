@@ -7,6 +7,9 @@ import com.laigu.laigu.duel.DuelActions;
 import com.laigu.laigu.duel.DuelCardCatalog;
 import com.laigu.laigu.duel.DuelCardData;
 import com.laigu.laigu.duel.DuelGame;
+import com.laigu.laigu.duel.newcard.AnimationEvent;
+import com.laigu.laigu.duel.newcard.CardItemAdapter;
+import com.laigu.laigu.duel.newcard.DuelCard;
 import com.laigu.laigu.network.DuelActionC2SPacket;
 import com.laigu.laigu.network.ModPackets;
 import com.laigu.laigu.util.CardNbt;
@@ -28,6 +31,7 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.api.distmarker.OnlyIn;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -83,6 +87,73 @@ public class DuelScreen extends Screen
     private DuelView v;
     private int selectedPool = -1;
     private int selectedHand = -1;
+    private final List<AnimationEvent> newAnimationEvents = new ArrayList<>();
+    // ---- 阶段17：新系统动画事件（事件驱动；来源 NewAnimationEventS2CPacket） ----
+    /** 待消费的新系统事件队列（每 tick 处理一条）。 */
+    private final ArrayDeque<AnimationEvent> newAnimQueue = new ArrayDeque<>();
+    private int newJumpSide = -1, newJumpSlot = -1, newJumpAge = -1;    // 跳跃（CARD_TRIGGER）
+    private int newFlashSide = -1, newFlashSlot = -1, newFlashAge = -1; // 激活闪光（CARD_ACTIVATE）
+    private int newMarkSide = -1, newMarkSlot = -1, newMarkAge = -1;    // 销毁标记（CARD_DESTROY_MARK）
+    private String newPopupText = "";                                    // 弹出文本（+N / ×N）
+    private int newPopupColor = 0, newPopupAge = -1, newPopupSide = -1, newPopupSlot = -1;
+
+    /** 新版动画包消费入口：事件入队逐 tick 播放；旧全量状态动画保持不变。 */
+    public void acceptNewAnimationEvents(List<AnimationEvent> events)
+    {
+        if (events == null) return;
+        newAnimationEvents.addAll(events);
+        if (newAnimationEvents.size() > 128)
+            newAnimationEvents.subList(0, newAnimationEvents.size() - 128).clear();
+        for (AnimationEvent e : events) if (e != null)
+        {
+            newAnimQueue.addLast(e);
+            if (newAnimQueue.size() > 64) newAnimQueue.pollFirst();
+        }
+    }
+
+    /** 阶段17：每 tick 消费一条新系统事件，映射为跳跃/弹出/闪光/销毁标记。 */
+    private void processNewAnimations()
+    {
+        if (newJumpAge >= 0 && ++newJumpAge > 14) { newJumpAge = -1; newJumpSide = -1; newJumpSlot = -1; }
+        if (newFlashAge >= 0 && ++newFlashAge > 12) { newFlashAge = -1; newFlashSide = -1; newFlashSlot = -1; }
+        if (newMarkAge >= 0 && ++newMarkAge > 40) { newMarkAge = -1; newMarkSide = -1; newMarkSlot = -1; }
+        if (newPopupAge >= 0 && ++newPopupAge > 24) { newPopupAge = -1; newPopupText = ""; }
+        AnimationEvent e = newAnimQueue.pollFirst();
+        if (e == null) return;
+        switch (e.type())
+        {
+            case CARD_TRIGGER -> { newJumpSide = e.side(); newJumpSlot = e.slot(); newJumpAge = 0; }
+            case CARD_ACTIVATE -> { newFlashSide = e.side(); newFlashSlot = e.slot(); newFlashAge = 0; playUi(SoundEvents.EXPERIENCE_ORB_PICKUP, 0.4f); }
+            case CARD_DESTROY_MARK -> { newMarkSide = e.side(); newMarkSlot = e.slot(); newMarkAge = 0; }
+            case SCORE_POPUP -> { newPopupText = "+" + e.value(); newPopupColor = 0xFF7DF77D; newPopupAge = 0; newPopupSide = e.side(); newPopupSlot = e.slot(); playUi(SoundEvents.ITEM_PICKUP, 0.4f); }
+            case MULTIPLIER_POPUP -> { newPopupText = "x" + e.value(); newPopupColor = 0xFFFFE066; newPopupAge = 0; newPopupSide = e.side(); newPopupSlot = e.slot(); playUi(SoundEvents.EXPERIENCE_ORB_PICKUP, 0.5f); }
+            default -> { }
+        }
+    }
+
+    /** 阶段17：卡位覆盖动画（跳跃位移、激活闪光、销毁标记、弹出文本）。 */
+    private void drawNewAnimOverlays(GuiGraphics g, int sideAbs, int slot, int x, int y)
+    {
+        boolean jump = newJumpAge >= 0 && newJumpSide == sideAbs && newJumpSlot == slot;
+        if (jump) drawSelectionGlow(g, x - 2, y - 2, fieldW + 4, fieldH + 4, 0xFFFFE066);
+        if (newFlashAge >= 0 && newFlashSide == sideAbs && newFlashSlot == slot)
+        {
+            int alpha = (int) (140 * (1f - newFlashAge / 12f));
+            g.fill(x, y, x + fieldW, y + fieldH, (alpha << 24) | 0xFFE066);
+        }
+        if (newMarkAge >= 0 && newMarkSide == sideAbs && newMarkSlot == slot)
+        {
+            drawSelectionGlow(g, x - 2, y - 2, fieldW + 4, fieldH + 4, 0xFFFF5555);
+            g.drawString(font, "销", x + fieldW / 2 - 4, y + 2, 0xFFFF5555);
+        }
+        if (newPopupAge >= 0 && newPopupSide == sideAbs && newPopupSlot == slot)
+        {
+            int rise = Math.round(newPopupAge * 0.8f);
+            int alpha = Math.max(0, 255 - newPopupAge * 10);
+            g.drawString(font, newPopupText, x + fieldW / 2 - font.width(newPopupText) / 2,
+                    y - 10 - rise, (alpha << 24) | (newPopupColor & 0xFFFFFF));
+        }
+    }
 
     // ---- 动画状态 ----
     private float selJump = 1f;        // 选中跳跃进度 0→1
@@ -799,6 +870,7 @@ public class DuelScreen extends Screen
         {
             bubbles.removeIf(b -> ++b.age > BUBBLE_LIFE);   // 表情气泡老化
         }
+        processNewAnimations();
         advanceScore();
     }
 
@@ -1340,11 +1412,15 @@ public class DuelScreen extends Screen
                 boolean sj = playingScore && scoreJumpSide == 1 - v.mySide && scoreJumpSlot == i;
                 if (sj) y -= Math.round(8 * Math.sin(Math.PI * jumpProgress()));
                 if (sj) drawSelectionGlow(g, x - 2, y - 2, fieldW + 4, fieldH + 4, jumpColor());
+                // 阶段17：新系统触发跳跃（CARD_TRIGGER）
+                if (newJumpAge >= 0 && newJumpSide == 1 - v.mySide && newJumpSlot == i)
+                    y -= Math.round(8 * Math.sin(Math.PI * newJumpAge / 14f));
                 renderFieldCard(g, v.oppField, i, x, y);
                 DuelView.FieldView fv = findField(v.oppField, i);
                 if (fv != null && !fv.hidden && DuelCardData.isGold(fv.card))
                     drawGoldParticles(g, x, y, fieldW, fieldH, i, 1 - v.mySide);
                 if (sj) drawScoreParticles(g, x + fieldW / 2, y + fieldH / 2, jumpColor());
+                drawNewAnimOverlays(g, 1 - v.mySide, i, x, y);
             }
         }
 
@@ -1363,11 +1439,15 @@ public class DuelScreen extends Screen
             boolean sj = playingScore && scoreJumpSide == v.mySide && scoreJumpSlot == i;
             if (sj) y -= Math.round(8 * Math.sin(Math.PI * jumpProgress()));
             if (sj) drawSelectionGlow(g, x - 2, y - 2, fieldW + 4, fieldH + 4, 0xFFFFE066);
+            // 阶段17：新系统触发跳跃（CARD_TRIGGER）
+            if (newJumpAge >= 0 && newJumpSide == v.mySide && newJumpSlot == i)
+                y -= Math.round(8 * Math.sin(Math.PI * newJumpAge / 14f));
             renderFieldCard(g, v.myField, i, x, y);
             DuelView.FieldView fv = findField(v.myField, i);
             if (fv != null && !fv.hidden && DuelCardData.isGold(fv.card))
                 drawGoldParticles(g, x, y, fieldW, fieldH, i, v.mySide);
             if (sj) drawScoreParticles(g, x + fieldW / 2, y + fieldH / 2, jumpColor());
+            drawNewAnimOverlays(g, v.mySide, i, x, y);
         }
 
         // 我方手牌（观战=主机手牌，仅展示）
@@ -1832,10 +1912,24 @@ public class DuelScreen extends Screen
         {
             lines.add(Component.literal(DuelCardData.dynastyOf(card) + " · " + d.cls.displayName)
                     .withStyle(d.cls.color));
-            lines.add(Component.literal(d.descFor(card)).withStyle(ChatFormatting.GRAY));
-            if (gold && d.goldDesc != null)
+            // 阶段13：卡面描述优先读新系统（DuelCard.description/goldDescription），未映射时回退旧目录
+            String mainLine = "";
+            String goldLine = null;
+            java.util.Optional<DuelCard> nc = CardItemAdapter.create(card);
+            if (nc.isPresent())
             {
-                lines.add(Component.literal(d.goldDesc).withStyle(ChatFormatting.GOLD));
+                mainLine = nc.get().description();
+                if (gold) goldLine = nc.get().goldDescription();
+            }
+            if (mainLine.isEmpty())
+            {
+                mainLine = d.descFor(card);
+                if (gold) goldLine = d.goldDesc;
+            }
+            lines.add(Component.literal(mainLine).withStyle(ChatFormatting.GRAY));
+            if (gold && goldLine != null && !goldLine.isEmpty() && !"焕章：无".equals(goldLine))
+            {
+                lines.add(Component.literal(goldLine).withStyle(ChatFormatting.GOLD));
             }
         }
         if (fv != null && !fv.hidden)

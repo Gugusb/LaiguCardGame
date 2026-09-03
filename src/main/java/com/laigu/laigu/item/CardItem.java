@@ -4,6 +4,8 @@ import com.laigu.laigu.card.CardInfo;
 import com.laigu.laigu.client.InspectAnimator;
 import com.laigu.laigu.duel.DuelCardCatalog;
 import com.laigu.laigu.duel.DuelCardData;
+import com.laigu.laigu.duel.newcard.CardItemAdapter;
+import com.laigu.laigu.duel.newcard.DuelCard;
 import com.laigu.laigu.util.CardNbt;
 import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.ChatFormatting;
@@ -105,12 +107,25 @@ public class CardItem extends Item
             tooltip.add(Component.literal(duel.cls.displayName + (gold ? " · 金质" : " · 普通"))
                     .withStyle(duel.cls.color));
             // 主效果、激活目标和金卡焕章分别按各自参数规则渲染，避免激活卡复用主效果 p1/p2。
-            String cardDesc = duel.activateCap > 0 ? duel.activationDescFor(stack) : duel.descFor(stack);
+            // 阶段13：卡面描述优先读新系统（DuelCard.description/goldDescription）；未映射到新系统时回退旧目录。
+            String cardDesc = "";
+            String goldLine = null;
+            java.util.Optional<DuelCard> nc = CardItemAdapter.create(stack);
+            if (nc.isPresent())
+            {
+                cardDesc = nc.get().description();
+                if (gold) goldLine = nc.get().goldDescription();
+            }
+            if (cardDesc == null || cardDesc.isEmpty())
+            {
+                cardDesc = duel.activateCap > 0 ? duel.activationDescFor(stack) : duel.descFor(stack);
+                if (gold) goldLine = duel.goldDescFor(stack);
+            }
             tooltip.add(Component.literal(cardDesc)
                     .withStyle(gold ? ChatFormatting.GOLD : ChatFormatting.WHITE));
-            if (gold)
+            if (gold && goldLine != null && !goldLine.isEmpty())
             {
-                tooltip.add(Component.literal(duel.goldDescFor(stack)).withStyle(ChatFormatting.GOLD));
+                tooltip.add(Component.literal(goldLine).withStyle(ChatFormatting.GOLD));
             }
         }
 
